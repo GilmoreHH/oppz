@@ -101,37 +101,8 @@ st.sidebar.header("Authentication & Filter Options")
 
 # Filter selection for period (Week, Month, Quarter)
 selected_period = st.sidebar.selectbox("Select Period", options=["Week", "Month", "Quarter"], index=0)
-
-# Function to get date range based on selected period
-def get_date_range(period):
-    today = datetime.today()
-    if period == "Week":
-        start_date = today - timedelta(days=today.weekday())  # Start of the week (Monday)
-        end_date = start_date + timedelta(days=6)  # End of the week (Sunday)
-    elif period == "Month":
-        start_date = today.replace(day=1)  # First day of the month
-        end_date = today.replace(day=28) + timedelta(days=4)  # End of the month (handle overflow)
-        end_date = end_date - timedelta(days=end_date.day)  # Get the last day of the month
-    elif period == "Quarter":
-        month = (today.month - 1) // 3 * 3 + 1
-        start_date = datetime(today.year, month, 1)
-        end_date = datetime(today.year, month + 3, 1) - timedelta(days=1)
-
-    return start_date, end_date
-
-# Get start and end date based on selected period
 start_date, end_date = get_date_range(selected_period)
-
-# Format the start and end date to show on the UI in a user-friendly way
-start_date_display = start_date.strftime('%B %d, %Y')  # e.g., "January 01, 2025"
-end_date_display = end_date.strftime('%B %d, %Y')      # e.g., "March 31, 2025"
-
-# For internal capturing, store in ISO format (with timezone adjustment if needed)
-start_date_iso = start_date.isoformat() + "T00:00:00-0456"  # Assuming -0456 timezone
-end_date_iso = end_date.isoformat() + "T23:59:59-0456"      # Assuming -0456 timezone
-
-# Display the user-friendly date range
-st.sidebar.write(f"**Date Range:**\nFrom: {start_date_display}\nTo: {end_date_display}")
+st.sidebar.write(f"**Date Range:**\nFrom: {start_date}\nTo: {end_date}")
 
 # Button to trigger query
 run_query_button = st.sidebar.button("Authenticate & Run Query")
@@ -144,7 +115,7 @@ if run_query_button:
 if st.session_state.force_query or not st.session_state.authenticated:
     if run_query_button:
         # Authenticate and fetch the query when the button is pressed
-        df, query = connect_to_salesforce_and_run_query(start_date_iso, end_date_iso)
+        df, query = connect_to_salesforce_and_run_query(start_date, end_date)
         if df is not None:
             st.session_state.authenticated = True
             st.session_state.df = df
@@ -171,6 +142,7 @@ if st.session_state.authenticated:
 
     st.subheader("Insurance Policies Data")
     st.dataframe(filtered_df)
+
     st.subheader("Visualizations")
     chart_type = st.sidebar.selectbox(
         "Select Chart Type",
