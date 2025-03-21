@@ -10,6 +10,13 @@ from datetime import datetime, timedelta
 # Load environment variables from .env file
 load_dotenv()
 
+# Set page configuration
+st.set_page_config(
+    page_title="New Business Binds Dashboard",
+    page_icon="🤝",  # Change to an appropriate icon (e.g., briefcase)
+    layout="wide",   # Use a wide layout for the app
+)
+
 # Function to calculate date ranges using US/Eastern timezone
 def get_date_range(period):
     """Return start and end ISO dates for the selected period (Week, Month, Quarter)."""
@@ -89,7 +96,7 @@ def connect_to_salesforce_and_run_query(start_date, end_date):
 
 # Streamlit UI - Dashboard Layout
 # Streamlit UI - Dashboard Layout
-st.title("New Business Binds Dashboard")
+st.title("New Business Binds 💼 Dashboard")
 
 if 'authenticated' not in st.session_state:
     st.session_state.authenticated = False
