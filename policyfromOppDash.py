@@ -4,15 +4,43 @@ import os
 from dotenv import load_dotenv
 import plotly.express as px
 import pandas as pd
+import pytz
+from datetime import datetime, timedelta
 
 # Load environment variables from .env file
 load_dotenv()
 
-# Function to connect to Salesforce and execute SOQL query
-def connect_to_salesforce_and_run_query():
-    """Connect to Salesforce and execute SOQL query for insurance policies."""
+# Function to calculate date ranges using US/Eastern timezone
+def get_date_range(period):
+    """Return start and end ISO dates for the selected period (Week, Month, Quarter)."""
+    tz = pytz.timezone("US/Eastern")
+    today = datetime.now(tz)
+    
+    if period == "Week":
+        # Monday start and Sunday end
+        start_of_period = (today - timedelta(days=today.weekday())).replace(hour=0, minute=0, second=0, microsecond=0)
+        end_of_period = start_of_period + timedelta(days=6, hours=23, minutes=59, seconds=59)
+    elif period == "Month":
+        start_of_period = today.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        end_of_period = (start_of_period + timedelta(days=31)).replace(day=1) - timedelta(seconds=1)
+    elif period == "Quarter":
+        quarter = (today.month - 1) // 3 + 1
+        start_of_period = datetime(today.year, 3 * quarter - 2, 1, tzinfo=tz)
+        if quarter < 4:
+            end_of_period = datetime(today.year, 3 * quarter + 1, 1, tzinfo=tz) - timedelta(seconds=1)
+        else:
+            end_of_period = datetime(today.year, 12, 31, 23, 59, 59, tzinfo=tz)
+    else:
+        raise ValueError("Invalid period selected")
+    
+    # Convert to the correct DateTime string format for Salesforce
+    return start_of_period.strftime("%Y-%m-%dT%H:%M:%S%z"), end_of_period.strftime("%Y-%m-%dT%H:%M:%S%z")
+
+
+# Function to connect to Salesforce and execute SOQL query for policies
+def connect_to_salesforce_and_run_query(start_date, end_date):
     try:
-        # Connect to Salesforce using environment variables
+        # Connect to Salesforce
         sf = Salesforce(
             username=os.getenv("SF_USERNAME_PRO"),
             password=os.getenv("SF_PASSWORD_PRO"),
@@ -20,113 +48,158 @@ def connect_to_salesforce_and_run_query():
         )
         st.success("Salesforce connection successful!")
 
-        # Define the SOQL query without filters for SourceOpportunityId
-        soql_query = """
-            SELECT SourceOpportunityId, COUNT(Id) 
+        # SOQL query with LIMIT
+        soql_query = f"""
+            SELECT PolicyType, COUNT(Id) PolicyCount, MIN(CreatedDate) CreatedDate
             FROM InsurancePolicy
-            WHERE CreatedDate = LAST_N_DAYS:7 AND SourceOpportunityId != NULL
-            GROUP BY SourceOpportunityId
+            WHERE SourceOpportunityId != NULL
+            AND CreatedDate >= {start_date}
+            AND CreatedDate <= {end_date}
+            GROUP BY SourceOpportunityId, PolicyType
+            LIMIT 2000
         """
         
-        # Execute the SOQL query
         query_results = sf.query_all(soql_query)
-        
-        # Extract and prepare data for visualization
         records = query_results['records']
+        
+        # Use queryMore to retrieve all pages if there are more records
+        while 'nextRecordsUrl' in query_results:
+            query_results = sf.query_more(query_results['nextRecordsUrl'], True)
+            records.extend(query_results['records'])
+        
+        # Create DataFrame from records
         df = pd.DataFrame(records)
         
-        # Convert fields to the correct types
-        df['SourceOpportunityId'] = df['SourceOpportunityId'].astype(str)
-        df['expr0'] = df['expr0'].astype(int)  # 'expr0' holds the COUNT(Id) result
+        # Drop 'Attributes' column if it exists
+        df = df.drop(columns=['attributes'], errors='ignore')
+
+        # Optional: log dataframe columns for debugging
+        st.write("Returned columns:", df.columns.tolist())
         
-        # Return the dataframe and query used
+        df['OpportunityIndex'] = range(1, len(df) + 1)
+        df['PolicyCount'] = df['PolicyCount'].astype(int)
+        df['CreatedDate'] = pd.to_datetime(df['CreatedDate'])
+
         return df, soql_query
-        
+
     except Exception as e:
         st.error(f"Error while querying Salesforce: {str(e)}")
         return None, None
 
 
 # Streamlit UI - Dashboard Layout
-st.title("New Business Binds")
+# Streamlit UI - Dashboard Layout
+st.title("New Business Binds Dashboard")
 
-# Session state for persistent variables
 if 'authenticated' not in st.session_state:
     st.session_state.authenticated = False
     st.session_state.df = None
     st.session_state.query = None
-    st.session_state.total_count = 0
+    st.session_state.force_query = False
 
-# Sidebar for filters and authentication
 st.sidebar.header("Authentication & Filter Options")
 
-# Authenticate only once
-if not st.session_state.authenticated:
-    if st.sidebar.button("Authenticate & Run Query"):
-        # Try connecting to Salesforce (authentication check)
-        df, query = connect_to_salesforce_and_run_query()
+# Filter selection for period (Week, Month, Quarter)
+selected_period = st.sidebar.selectbox("Select Period", options=["Week", "Month", "Quarter"], index=0)
+
+# Function to get date range based on selected period
+def get_date_range(period):
+    today = datetime.today()
+    if period == "Week":
+        start_date = today - timedelta(days=today.weekday())  # Start of the week (Monday)
+        end_date = start_date + timedelta(days=6)  # End of the week (Sunday)
+    elif period == "Month":
+        start_date = today.replace(day=1)  # First day of the month
+        end_date = today.replace(day=28) + timedelta(days=4)  # End of the month (handle overflow)
+        end_date = end_date - timedelta(days=end_date.day)  # Get the last day of the month
+    elif period == "Quarter":
+        month = (today.month - 1) // 3 * 3 + 1
+        start_date = datetime(today.year, month, 1)
+        end_date = datetime(today.year, month + 3, 1) - timedelta(days=1)
+
+    return start_date, end_date
+
+# Get start and end date based on selected period
+start_date, end_date = get_date_range(selected_period)
+
+# Format the start and end date to show on the UI in a user-friendly way
+start_date_display = start_date.strftime('%B %d, %Y')  # e.g., "January 01, 2025"
+end_date_display = end_date.strftime('%B %d, %Y')      # e.g., "March 31, 2025"
+
+# For internal capturing, store in ISO format (with timezone adjustment if needed)
+start_date_iso = start_date.isoformat() + "T00:00:00-0456"  # Assuming -0456 timezone
+end_date_iso = end_date.isoformat() + "T23:59:59-0456"      # Assuming -0456 timezone
+
+# Display the user-friendly date range
+st.sidebar.write(f"**Date Range:**\nFrom: {start_date_display}\nTo: {end_date_display}")
+
+# Button to trigger query
+run_query_button = st.sidebar.button("Authenticate & Run Query")
+
+if run_query_button:
+    # If the button is pressed, authenticate and fetch the data
+    st.session_state.force_query = True
+
+# Authenticate and fetch data only when button is pressed or period is changed
+if st.session_state.force_query or not st.session_state.authenticated:
+    if run_query_button:
+        # Authenticate and fetch the query when the button is pressed
+        df, query = connect_to_salesforce_and_run_query(start_date_iso, end_date_iso)
         if df is not None:
             st.session_state.authenticated = True
             st.session_state.df = df
             st.session_state.query = query
-            st.session_state.total_count = len(df)
+            st.session_state.force_query = False
             st.sidebar.success("Authentication successful. You can now view and filter the data.")
 else:
     st.sidebar.success("Already authenticated. You can view and interact with the data.")
 
-# Main content area
 if st.session_state.authenticated:
-    # Display the total number of policies
-    st.subheader("Insurance Policies Summary")
-    st.metric("Total Policies", st.session_state.total_count)
+    # Use the "PolicyType" field for filtering
+    unique_policy_types = sorted(st.session_state.df['PolicyType'].dropna().unique())
+    selected_policy_types = st.sidebar.multiselect("Select Policy Types", options=unique_policy_types, default=unique_policy_types)
 
-    # Display SOQL query used
+    # Filter the dataframe based on PolicyType selection
+    filtered_df = st.session_state.df[st.session_state.df['PolicyType'].isin(selected_policy_types)]
+
+    # Display the summary of filtered data
+    st.subheader("Insurance Policies Summary")
+    st.metric("Total Policies", filtered_df['PolicyCount'].sum())
+
     st.subheader("SOQL Query")
     st.code(st.session_state.query)
 
-    # Visualization Section
+    st.subheader("Insurance Policies Data")
+    st.dataframe(filtered_df)
     st.subheader("Visualizations")
-    
-    # Chart Type Selection in Sidebar
     chart_type = st.sidebar.selectbox(
-        "Select Chart Type", 
-        options=["Bar Chart", "Pie Chart", "Scatter Plot", "Line Chart", "Histogram", "Box Plot"]
+        "Select Chart Type",
+        options=["Bar Chart", "Scatter Plot", "Line Chart", "Histogram", "Box Plot"]
     )
 
-    # Process data without displaying SourceOpportunityId in any chart
-    policies_per_opportunity = st.session_state.df.groupby('SourceOpportunityId').agg({'expr0': 'sum'}).reset_index()
+    policies_data = filtered_df[['OpportunityIndex', 'PolicyCount']]
 
-    # Remove SourceOpportunityId from visualization; we will display only the aggregated counts
-    policies_per_opportunity['Policy Count'] = policies_per_opportunity['expr0']
-
-    # Display the appropriate chart based on user selection
     if chart_type == "Bar Chart":
-        fig1 = px.bar(policies_per_opportunity, x=policies_per_opportunity.index, y='Policy Count', title="Insurance Policies Per Opportunity")
-        fig1.update_layout(xaxis_title="Policy Index", yaxis_title="Policy Count")
-        st.plotly_chart(fig1)
-
-    elif chart_type == "Pie Chart":
-        fig2 = px.pie(policies_per_opportunity, names=policies_per_opportunity.index, values='Policy Count', title="Insurance Policies Distribution by Opportunity")
-        fig2.update_traces(textinfo='percent+label')
-        st.plotly_chart(fig2)
-
+        fig = px.bar(policies_data, x='OpportunityIndex', y='PolicyCount',
+                     title="Policies per Opportunity (Anonymized)",
+                     labels={"OpportunityIndex": "Opportunity Index", "PolicyCount": "Policy Count"})
+        st.plotly_chart(fig)
     elif chart_type == "Scatter Plot":
-        fig3 = px.scatter(policies_per_opportunity, x=policies_per_opportunity.index, y='Policy Count', title="Policies vs Opportunity")
-        fig3.update_traces(mode='markers', marker=dict(size=12))
-        st.plotly_chart(fig3)
-
+        fig = px.scatter(policies_data, x='OpportunityIndex', y='PolicyCount',
+                         title="Policies vs Opportunity (Anonymized)")
+        st.plotly_chart(fig)
     elif chart_type == "Line Chart":
-        fig4 = px.line(policies_per_opportunity, x=policies_per_opportunity.index, y='Policy Count', title="Insurance Policies Over Opportunities (Line Chart)")
-        fig4.update_layout(xaxis_title="Policy Index", yaxis_title="Policy Count")
-        st.plotly_chart(fig4)
-
+        fig = px.line(policies_data, x='OpportunityIndex', y='PolicyCount',
+                      title="Policies Over Opportunities (Line Chart)")
+        st.plotly_chart(fig)
     elif chart_type == "Histogram":
-        fig5 = px.histogram(policies_per_opportunity, x='Policy Count', title="Distribution of Policies by Count")
-        st.plotly_chart(fig5)
-
+        fig = px.histogram(policies_data, x='PolicyCount',
+                           title="Distribution of Policies by Count")
+        st.plotly_chart(fig)
     elif chart_type == "Box Plot":
-        fig6 = px.box(policies_per_opportunity, x=policies_per_opportunity.index, y='Policy Count', title="Policies by Opportunity (Box Plot)")
-        st.plotly_chart(fig6)
-
+        fig = px.box(policies_data, x='OpportunityIndex', y='PolicyCount',
+                     title="Policies by Opportunity (Box Plot)")
+        st.plotly_chart(fig)
 else:
     st.warning("Authenticate first to view data and charts.")
+
