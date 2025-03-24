@@ -10,6 +10,14 @@ from datetime import datetime, timedelta
 # Load environment variables from .env file
 load_dotenv()
 
+# Set page configuration
+st.set_page_config(
+    page_title="New Business Binds",
+    page_icon="💼",
+    layout="wide",  # Use a wide layout for the app
+)
+
+
 # Function to calculate date ranges using US/Eastern timezone
 def get_date_range(period):
     """Return start and end ISO dates for the selected period (Week, Month, Quarter)."""
