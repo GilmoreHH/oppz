@@ -13,7 +13,7 @@ load_dotenv()
 # Set page configuration
 st.set_page_config(
     page_title="New Business Binds",
-    page_icon="💼",
+    page_icon="🤝",
     layout="wide",  # Use a wide layout for the app
 )
 
