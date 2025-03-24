@@ -10,13 +10,6 @@ from datetime import datetime, timedelta
 # Load environment variables from .env file
 load_dotenv()
 
-# Set page configuration
-st.set_page_config(
-    page_title="New Business Binds",
-    page_icon="🤝",  # Change to an appropriate icon (e.g., briefcase)
-    layout="wide",   # Use a wide layout for the app
-)
-
 # Function to calculate date ranges using US/Eastern timezone
 def get_date_range(period):
     """Return start and end ISO dates for the selected period (Week, Month, Quarter)."""
@@ -55,13 +48,15 @@ def connect_to_salesforce_and_run_query(start_date, end_date):
         )
         st.success("Salesforce connection successful!")
 
-        # SOQL query with LIMIT
+        # Updated SOQL query based on the new requirements
         soql_query = f"""
-            SELECT PolicyType, COUNT(Id) PolicyCount, MIN(CreatedDate) CreatedDate
+            SELECT PolicyType, COUNT(Id) PolicyCount, SUM(Total_Policy_Premium__c) TotalPremium, MIN(EffectiveDate) EffectiveDate
             FROM InsurancePolicy
             WHERE SourceOpportunityId != NULL
-            AND CreatedDate >= {start_date}
-            AND CreatedDate <= {end_date}
+            AND Business_Type_Reporting__c = 'New Business'
+            AND EffectiveDate >= {start_date}
+            AND EffectiveDate <= {end_date}
+            AND Status = 'Active'
             GROUP BY SourceOpportunityId, PolicyType
             LIMIT 2000
         """
@@ -80,12 +75,13 @@ def connect_to_salesforce_and_run_query(start_date, end_date):
         # Drop 'Attributes' column if it exists
         df = df.drop(columns=['attributes'], errors='ignore')
 
-        # Optional: log dataframe columns for debugging
-        st.write("Returned columns:", df.columns.tolist())
+        # Optional: log dataframe columns for debugging (hidden now)
+        # st.write("Returned columns:", df.columns.tolist())
         
         df['OpportunityIndex'] = range(1, len(df) + 1)
         df['PolicyCount'] = df['PolicyCount'].astype(int)
-        df['CreatedDate'] = pd.to_datetime(df['CreatedDate'])
+        df['TotalPremium'] = pd.to_numeric(df['TotalPremium'], errors='coerce').fillna(0)
+        df['EffectiveDate'] = pd.to_datetime(df['EffectiveDate'])
 
         return df, soql_query
 
@@ -95,8 +91,7 @@ def connect_to_salesforce_and_run_query(start_date, end_date):
 
 
 # Streamlit UI - Dashboard Layout
-# Streamlit UI - Dashboard Layout
-st.title("New Business Binds 💼 Dashboard")
+st.title("New Business Binds Dashboard")
 
 if 'authenticated' not in st.session_state:
     st.session_state.authenticated = False
@@ -107,7 +102,7 @@ if 'authenticated' not in st.session_state:
 st.sidebar.header("Authentication & Filter Options")
 
 # Filter selection for period (Week, Month, Quarter)
-selected_period = st.sidebar.selectbox("Select Period", options=["Week", "Month", "Quarter"], index=0)
+selected_period = st.sidebar.selectbox("Select Period", options=["Week", "Month", "Quarter"], index=1)  # Default to Month
 start_date, end_date = get_date_range(selected_period)
 st.sidebar.write(f"**Date Range:**\nFrom: {start_date}\nTo: {end_date}")
 
@@ -140,12 +135,20 @@ if st.session_state.authenticated:
     # Filter the dataframe based on PolicyType selection
     filtered_df = st.session_state.df[st.session_state.df['PolicyType'].isin(selected_policy_types)]
 
+    # Display current month and year at the top
+    current_month_year = datetime.now().strftime("%B %Y")
+    st.header(f"Reporting Period: {current_month_year}")
+    
     # Display the summary of filtered data
     st.subheader("Insurance Policies Summary")
-    st.metric("Total Policies", filtered_df['PolicyCount'].sum())
-
-    st.subheader("SOQL Query")
-    st.code(st.session_state.query)
+    col1, col2 = st.columns(2)
+    with col1:
+        st.metric("Total Policies", filtered_df['PolicyCount'].sum())
+    with col2:
+        total_premium = filtered_df['TotalPremium'].sum()
+        st.metric("Total Premium", f"${total_premium:,.2f}")
+    
+    # SOQL Query is now hidden (removed)
 
     st.subheader("Insurance Policies Data")
     st.dataframe(filtered_df)
@@ -153,32 +156,49 @@ if st.session_state.authenticated:
     st.subheader("Visualizations")
     chart_type = st.sidebar.selectbox(
         "Select Chart Type",
-        options=["Bar Chart", "Scatter Plot", "Line Chart", "Histogram", "Box Plot"]
+        options=["Premium by Policy Type", "Bar Chart", "Scatter Plot", "Line Chart", "Histogram", "Box Plot"]
     )
 
-    policies_data = filtered_df[['OpportunityIndex', 'PolicyCount']]
-
-    if chart_type == "Bar Chart":
-        fig = px.bar(policies_data, x='OpportunityIndex', y='PolicyCount',
-                     title="Policies per Opportunity (Anonymized)",
-                     labels={"OpportunityIndex": "Opportunity Index", "PolicyCount": "Policy Count"})
+    # Group by PolicyType for analysis
+    policy_type_analysis = filtered_df.groupby('PolicyType').agg({
+        'PolicyCount': 'sum',
+        'TotalPremium': 'sum'
+    }).reset_index()
+    
+    if chart_type == "Premium by Policy Type":
+        fig = px.bar(policy_type_analysis, x='PolicyType', y='TotalPremium',
+                     title="Total Premium by Line of Business",
+                     labels={"PolicyType": "Line of Business", "TotalPremium": "Total Premium ($)"},
+                     color='PolicyType')
+        st.plotly_chart(fig)
+    elif chart_type == "Bar Chart":
+        fig = px.bar(policy_type_analysis, x='PolicyType', y='PolicyCount',
+                     title="Policies by Line of Business",
+                     labels={"PolicyType": "Line of Business", "PolicyCount": "Policy Count"},
+                     color='PolicyType')
         st.plotly_chart(fig)
     elif chart_type == "Scatter Plot":
-        fig = px.scatter(policies_data, x='OpportunityIndex', y='PolicyCount',
-                         title="Policies vs Opportunity (Anonymized)")
+        fig = px.scatter(policy_type_analysis, x='PolicyCount', y='TotalPremium',
+                         title="Premium vs Policy Count by Line of Business",
+                         labels={"PolicyCount": "Policy Count", "TotalPremium": "Total Premium ($)"},
+                         color='PolicyType', size='PolicyCount')
         st.plotly_chart(fig)
     elif chart_type == "Line Chart":
-        fig = px.line(policies_data, x='OpportunityIndex', y='PolicyCount',
-                      title="Policies Over Opportunities (Line Chart)")
+        # Sort by premium amount for better visualization
+        sorted_data = policy_type_analysis.sort_values('TotalPremium', ascending=False)
+        fig = px.line(sorted_data, x='PolicyType', y=['PolicyCount', 'TotalPremium'],
+                      title="Policies and Premium by Line of Business",
+                      labels={"PolicyType": "Line of Business", "value": "Count/Amount", "variable": "Metric"})
         st.plotly_chart(fig)
     elif chart_type == "Histogram":
-        fig = px.histogram(policies_data, x='PolicyCount',
-                           title="Distribution of Policies by Count")
+        fig = px.histogram(filtered_df, x='TotalPremium',
+                           title="Distribution of Policies by Premium",
+                           color='PolicyType')
         st.plotly_chart(fig)
     elif chart_type == "Box Plot":
-        fig = px.box(policies_data, x='OpportunityIndex', y='PolicyCount',
-                     title="Policies by Opportunity (Box Plot)")
+        fig = px.box(filtered_df, x='PolicyType', y='TotalPremium',
+                     title="Premium by Line of Business (Box Plot)",
+                     color='PolicyType')
         st.plotly_chart(fig)
 else:
     st.warning("Authenticate first to view data and charts.")
-
