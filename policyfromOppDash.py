@@ -17,10 +17,9 @@ st.set_page_config(
     layout="wide",  # Use a wide layout for the app
 )
 
-
 # Function to calculate date ranges using US/Eastern timezone
 def get_date_range(period):
-    """Return start and end ISO dates for the selected period (Week, Month, Quarter)."""
+    """Return start and end ISO dates for the selected period (Week, Month, Quarter, Custom)."""
     tz = pytz.timezone("US/Eastern")
     today = datetime.now(tz)
     
@@ -38,6 +37,9 @@ def get_date_range(period):
             end_of_period = datetime(today.year, 3 * quarter + 1, 1, tzinfo=tz) - timedelta(seconds=1)
         else:
             end_of_period = datetime(today.year, 12, 31, 23, 59, 59, tzinfo=tz)
+    elif period == "Custom":
+        # For Custom, we'll return None values and handle the date picker separately
+        return None, None
     else:
         raise ValueError("Invalid period selected")
     
@@ -106,12 +108,52 @@ if 'authenticated' not in st.session_state:
     st.session_state.df = None
     st.session_state.query = None
     st.session_state.force_query = False
+    st.session_state.custom_start_date = None
+    st.session_state.custom_end_date = None
 
 st.sidebar.header("Authentication & Filter Options")
 
-# Filter selection for period (Week, Month, Quarter)
-selected_period = st.sidebar.selectbox("Select Period", options=["Week", "Month", "Quarter"], index=1)  # Default to Month
-start_date, end_date = get_date_range(selected_period)
+# Filter selection for period (Week, Month, Quarter, Custom)
+selected_period = st.sidebar.selectbox("Select Period", options=["Week", "Month", "Quarter", "Custom"], index=1)  # Default to Month
+
+# Handle custom date range if selected
+if selected_period == "Custom":
+    # Get current eastern time for default values
+    eastern_tz = pytz.timezone("US/Eastern")
+    today = datetime.now(eastern_tz)
+    
+    # Default to last 30 days if not previously set
+    if not st.session_state.custom_start_date:
+        st.session_state.custom_start_date = (today - timedelta(days=30)).date()
+    if not st.session_state.custom_end_date:
+        st.session_state.custom_end_date = today.date()
+    
+    # Date pickers for custom range
+    custom_start_date = st.sidebar.date_input(
+        "Start Date",
+        value=st.session_state.custom_start_date
+    )
+    custom_end_date = st.sidebar.date_input(
+        "End Date",
+        value=st.session_state.custom_end_date
+    )
+    
+    # Store the selected dates in session state
+    st.session_state.custom_start_date = custom_start_date
+    st.session_state.custom_end_date = custom_end_date
+    
+    # Convert date objects to Eastern timezone datetime with proper time boundaries
+    start_datetime = datetime.combine(custom_start_date, datetime.min.time()).replace(tzinfo=eastern_tz)
+    end_datetime = datetime.combine(custom_end_date, datetime.max.time()).replace(tzinfo=eastern_tz)
+    
+    # Format for Salesforce query
+    start_date = start_datetime.strftime("%Y-%m-%dT%H:%M:%S%z")
+    end_date = end_datetime.strftime("%Y-%m-%dT%H:%M:%S%z")
+else:
+    # Use the existing function for predefined periods
+    start_date, end_date = get_date_range(selected_period)
+
+# Display the selected date range
 st.sidebar.write(f"**Date Range:**\nFrom: {start_date}\nTo: {end_date}")
 
 # Button to trigger query
